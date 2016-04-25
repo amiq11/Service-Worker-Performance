@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<title>Service Worker Performance Tests</title>
+<script>
+var FetchLatencyTester = function(options) {
+  var nofityResultCallback = function() {};
+  var targetNumRequests = options.numRequests || 400;
+  var targetNumConcurrentRequests = options.numConcurrentRequests || 1;
+  var numTimedRequestsSent = 0;
+  var numTimedRequestsFinished = 0;
+  var responseTimes = [];
+  var targetUrl = options.targetUrl;
+  var testPrefix = options.testPrefix || targetUrl;
+
+  function sendXhr(xhr) {
+    xhr.timeout = 500;
+    xhr.open('GET', targetUrl, true);
+    xhr.setRequestHeader('Pragma', 'no-cache');
+	xhr.setRequestHeader('Cache-Control', 'no-cache');
+    xhr.send();
+  }
+
+  // Used when ramping the load up and down.
+  function rampRequest() {
+    var xhr = new XMLHttpRequest();
+    xhr.addEventListener('loadend', next, false);
+    sendXhr(xhr);
+  }
+
+  function timedRequest() {
+    var xhr = new XMLHttpRequest();
+
+    xhr.addEventListener('load', timedRequestCompleted, false);
+    xhr.addEventListener('error', timedRequestFailed, false);
+    xhr.addEventListener('abort', timedRequestFailed, false);
+    xhr.addEventListener('timeout', timedRequestFailed, false);
+
+    xhr.startTime = performance.now();
+    sendXhr(xhr);
+    numTimedRequestsSent++;
+  }
+
+  function timedRequestCompleted(event) {
+    var endTime = performance.now();
+    responseTimes.push(endTime - event.target.startTime);
+
+    numTimedRequestsFinished++;
+    next();
+  }
+
+  function timedRequestFailed(event) {
+    numTimedRequestsFinished++;
+    next();
+  }
+
+  function next() {
+    // Ramp-down requests finishing.
+
+    // All timed requests have finished.
+    if (numTimedRequestsFinished == targetNumRequests) {
+      notifyResultCallback(computeResults());
+      return;
+    }
+
+    // All timed requests have started, ramping down.
+    if (numTimedRequestsSent == targetNumRequests) {
+      rampRequest();
+      return;
+    }
+
+    // Still generating timed requests.
+    timedRequest();
+  }
+
+  function computeResults() {
+    var results = {};
+    results['nofetch_' + testPrefix + '_' + targetNumConcurrentRequests + '_failed_requests'] = {
+      value: numTimedRequestsSent - responseTimes.length,
+      units: 'requests'
+    };
+    responseTimes.sort();
+    reportPercentile(50);
+    reportPercentile(90);
+    reportPercentile(99);
+    return results
+
+    // Gets the n-th percentile response time, or ten seconds if that response did
+    // not succeed.
+    function percentile(n) {
+      var i = Math.floor(n * numTimedRequestsSent / 100);
+      if (i >= responseTimes.length) {
+        return 10 * 1000;
+      }
+      return responseTimes[i];
+    }
+
+    function reportPercentile(n) {
+      results['nofetch_' + testPrefix + '_' + targetNumConcurrentRequests + '_response_' + n + '_percentile'] = {
+        value: percentile(n),
+        units: 'ms'
+      };
+    }
+  }
+
+  this.run = function() {
+    return new Promise(function(resolve) {
+      notifyResultCallback = resolve;
+      for (var i = 0; i < targetNumConcurrentRequests - 1; i++) {
+        rampRequest();
+      }
+      timedRequest();
+    });
+  };
+};
+
+</script>
+<body>
+  <script>
+  function waitUntilActive(registration) {
+    return new Promise(function(resolve, reject) {
+      var serviceWorker;
+      if (registration.active) {
+        resolve(registration.active);
+      } else if (registration.waiting) {
+        serviceWorker = registration.waiting;
+        serviceWorker.onstatechange = checkState;
+      } else {
+        serviceWorker = registration.installing;
+        serviceWorker.onstatechange = checkState;
+      }
+
+      function checkState() {
+        if (serviceWorker.state == 'activated') {
+          serviceWorker.removeEventListener('statechange', checkState);
+          resolve(serviceWorker);
+        }
+      }
+    });
+  }
+
+  function addResults(partial) {
+    for (key in partial) {
+      if (partial.hasOwnProperty(key)) {
+        results[key] = partial[key];
+      }
+    }
+  }
+
+  function cleanUp() {
+    return navigator.serviceWorker.getRegistration(workerOptions['scope'])
+                    .then(function(r) {
+                      return r.unregister();
+                    });
+  }
+
+  function complete() {
+    console.log('complete');
+    console.log(results);
+    done = true;
+  }
+
+  done = false;
+  results = { };
+
+  var workerScriptPath = 'empty-worker.js';
+  var workerOptions = {scope: '/nofetch/'};
+  var outOfScopeTester = new FetchLatencyTester({
+    numRequests: 400,
+    numConcurrentRequests: 1,
+    targetUrl: 'blank.html',
+    testPrefix: 'outofscope'});
+  var inScopeTester = new FetchLatencyTester({
+    numRequests: 400,
+    numConcurrentRequests: 1,
+    targetUrl: 'nofetch/blank.html',
+    testPrefix: 'inscope'});
+
+  
+  navigator.serviceWorker.register(workerScriptPath, workerOptions)
+           .then(waitUntilActive)
+           .then(outOfScopeTester.run)
+           .then(addResults)
+           .then(inScopeTester.run)
+           .then(addResults)
+           .then(cleanUp)
+           .then(complete);
+  </script>
