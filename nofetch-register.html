@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<title>Service Worker No-fetch Test - Registration</title>
+<body>
+  <script>
+  function waitUntilActive(registration) {
+    return new Promise(function(resolve, reject) {
+      var serviceWorker;
+      if (registration.active) {
+        resolve(registration.active);
+      } else if (registration.waiting) {
+        serviceWorker = registration.waiting;
+        serviceWorker.onstatechange = checkState;
+      } else {
+        serviceWorker = registration.installing;
+        serviceWorker.onstatechange = checkState;
+      }
+
+      function checkState() {
+        if (serviceWorker.state == 'activated') {
+          serviceWorker.removeEventListener('statechange', checkState);
+          resolve(serviceWorker);
+        }
+      }
+    });
+  }
+
+  function complete() {
+    console.log('complete');
+    done = true;
+  }
+
+  var workerScriptPath = 'empty-worker.js';
+  var workerOptions = {scope: '/nofetch/'};
+
+  done = false;
+  
+  navigator.serviceWorker.register(workerScriptPath, workerOptions)
+           .then(waitUntilActive)
+           .then(complete);
+  </script>
+</body>
